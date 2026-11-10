@@ -6,7 +6,8 @@ window, and each window row has its own X.
 
 The panel opens from the chart icon in the bar, or with `SUPER + ALT + ESCAPE`,
 and appears in the middle of the focused monitor. It copies the macOS Force Quit
-window.
+window, with one addition: every window carries its workspace number, and that
+number sends the window to another workspace.
 
 ![the panel](preview.png)
 
@@ -48,8 +49,9 @@ answering.
 | Key | Action |
 |---|---|
 | `↑` `↓` | move the selection |
-| `→` | open the selected app into its windows, then step into the first one |
-| `←` | close the app, or leave a window row and return to its app |
+| `→` | open the selected app into its windows, or open the workspace numbers of a window or a single-window app |
+| `←` | close the app or the numbers, and step back to the row above |
+| `1` to `9`, `0` | while the numbers are open, send the window to that workspace |
 | `Page Up` / `Page Down` | move five rows |
 | `Home` / `End` | first and last row |
 | `Enter` or `Delete` | close the selected window, or force quit the selected app |
@@ -72,6 +74,26 @@ workspace the window is on. `←` closes the app again.
 The window row's X closes that window and nothing else, even when several
 windows belong to one process. The app row's X force quits the whole app. When a
 close does nothing because the app is not answering, the app row is the way out.
+
+## Sending a window to another workspace
+
+Every window row has a square with its workspace number, left of the X. An app
+with a single window carries the square on its own row, because that row is the
+window. An app with several windows has no square on the app row, since there is
+no one window to move.
+
+Click the square, or press `→` on the row, and a line of numbered squares opens
+under it: 1 up to the highest workspace in use, with five always offered because
+a fresh session has nothing above 1. The square for the window's current
+workspace is marked.
+
+Click a number, or type it, and the window moves there. `follow = false` in the
+Hyprland call keeps your view where it is, so a window can be filed away without
+the workspace changing under the panel. `←` closes the numbers without moving
+anything.
+
+The numbers come from the workspaces that exist, so the row grows as you use
+more of them and stops at twelve, which is what still fits on one line.
 
 ## Install
 
@@ -124,7 +146,7 @@ omarchy-shell shell toggle h1st0ry3d.oappy
 
 | Program | Why |
 |---|---|
-| `hyprctl` (ships with Hyprland) | the list of open windows, and closing one window |
+| `hyprctl` (ships with Hyprland) | the list of open windows, closing one window, and moving one |
 | `ps` (procps-ng) | the app names |
 | `kill` (coreutils) | the quit itself |
 

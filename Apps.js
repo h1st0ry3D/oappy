@@ -210,7 +210,7 @@ function prettyClass(className) {
 // The rows the panel draws, in display order. An app row comes first, and its
 // window rows follow while the app is open. The keyboard walks this list, so a
 // window row is reachable with the arrow keys the same way an app row is.
-function buildRows(groups, expandedKeys) {
+function buildRows(groups, expandedKeys, picker) {
   var list = asList(groups)
   var expanded = expandedKeys || {}
   var rows = []
@@ -218,42 +218,77 @@ function buildRows(groups, expandedKeys) {
     var app = list[index]
     var canExpand = app.windowCount > 1
     var isOpen = canExpand && expanded[app.key] === true
+    // An app with one window has that window's address, so the row can carry a
+    // workspace number and send it somewhere. An app with several windows has
+    // no single window to move, so it has no number.
+    var only = app.windowCount === 1 ? app.windows[0] : null
+    var appKey = "app:" + app.key
     rows.push({
       kind: "app",
-      key: "app:" + app.key,
+      key: appKey,
       appKey: app.key,
       app: app,
-      window: null,
-      address: "",
+      window: only,
+      address: only ? only.address : "",
+      workspace: only ? only.workspace : "",
       canExpand: canExpand,
       expanded: isOpen,
       name: app.name,
       detail: app.detail,
       pidText: app.pidText
     })
+
+    if (picker && picker.rowKey === appKey) rows.push(pickerRow(app, only, appKey, picker))
     if (!isOpen) continue
 
     var windows = sortedWindows(app.windows)
     for (var position = 0; position < windows.length; position++) {
       var window = windows[position]
+      var windowKey = "window:" + app.key + "::" + window.address
       rows.push({
         kind: "window",
-        key: "window:" + app.key + "::" + window.address,
+        key: windowKey,
         appKey: app.key,
         app: app,
         window: window,
         canExpand: false,
         expanded: false,
         name: window.title === "" ? "Untitled window" : window.title,
-        detail: windowDetail(window),
-        // A window row closes its window through Hyprland, so it needs the
-        // address, not the pid.
+        detail: windowDetail(app, window),
+        // A window row closes and moves its window through Hyprland, so it
+        // needs the address, not the pid.
         address: window.address,
+        workspace: window.workspace,
         pidText: ""
       })
+
+      // The picker opens under the window it moves, so the numbers and the
+      // window they act on stay together.
+      if (picker && picker.rowKey === windowKey) rows.push(pickerRow(app, window, windowKey, picker))
     }
   }
   return rows
+}
+
+// The row of workspace numbers, drawn under the row that owns the window it
+// moves. sourceKey is that row, so closing the picker returns the cursor to it.
+function pickerRow(app, window, sourceKey, picker) {
+  return {
+    kind: "workspaces",
+    key: "workspaces:" + sourceKey,
+    sourceKey: sourceKey,
+    appKey: app.key,
+    app: app,
+    window: window,
+    canExpand: false,
+    expanded: false,
+    name: "Move to workspace",
+    detail: "",
+    address: window ? window.address : "",
+    workspace: window ? window.workspace : "",
+    choices: asList(picker.choices),
+    pidText: ""
+  }
 }
 
 // Windows keep the same order across reads, so a row does not swap places under
@@ -269,10 +304,12 @@ function sortedWindows(windows) {
   return list
 }
 
-// The line under a window row. It says which workspace the window is on, so two
-// windows of one app are told apart by something other than their order.
-function windowDetail(window) {
-  return window.workspace === "" ? "" : "workspace " + window.workspace
+// The line under a window row. The window's own workspace is on its number
+// button, so this names the app instead, which is what tells two windows of one
+// app apart when they share a title.
+function windowDetail(app, window) {
+  var name = app && app.name ? String(app.name) : ""
+  return name
 }
 
 // The Hyprland call that closes one window, the same call SUPER + W makes. It
@@ -282,6 +319,17 @@ function closeWindowCommand(address) {
   var target = clean(address, 40)
   if (target === "") return ""
   return "hl.dsp.window.close({ window = \"address:" + target + "\" })"
+}
+
+// The Hyprland call that moves one window to a workspace. `follow = false` keeps
+// the view where it is, so moving a window does not pull the workspace out from
+// under the panel that asked for it.
+function moveWindowCommand(address, workspaceId) {
+  var target = clean(address, 40)
+  var workspace = Number(workspaceId)
+  if (target === "" || !isFinite(workspace) || workspace < 1) return ""
+  return "hl.dsp.window.move({ window = \"address:" + target + "\", workspace = \""
+    + Math.round(workspace) + "\", follow = false })"
 }
 
 // The line under the app name. One window says what it is; several say how many

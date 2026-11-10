@@ -49,15 +49,42 @@ Item {
   // app does not close another.
   property var expandedKeys: ({})
 
+  // The row whose workspace picker is open, or "" for none. That row is a window
+  // row, or an app row that has a single window. Only one picker is open at a
+  // time, so the numbers under a window are never ambiguous.
+  property string pickerKey: ""
+
   // What the list draws: an app row per app, and a window row per window of an
   // app that is open. Apps.js builds it, so the keyboard and the drawing walk
   // the same list.
-  readonly property var rows: Apps.buildRows(root.apps, root.expandedKeys)
+  // The workspaces a window can be sent to: 1 to the highest one in use, with
+  // five always offered because a fresh session has nothing above 1.
+  readonly property var workspaceChoices: {
+    var highest = 5
+    var values = Hyprland.workspaces ? Hyprland.workspaces.values : []
+    for (var index = 0; index < values.length; index++) {
+      var id = Number(values[index] ? values[index].id : 0)
+      if (id > highest) highest = id
+    }
+    // Twelve numbers still fit on one row inside the card.
+    if (highest > 12) highest = 12
+    var ids = []
+    for (var number = 1; number <= highest; number++) ids.push(number)
+    return ids
+  }
+
+  readonly property var picker: root.pickerKey === ""
+    ? null
+    : ({ rowKey: root.pickerKey, choices: root.workspaceChoices })
+
+  readonly property var rows: Apps.buildRows(root.apps, root.expandedKeys, root.picker)
 
   // Set while a kill is in flight, so a second click cannot start another one
   // and every X on the list shows the same busy state.
   property string busyKey: ""
   property string busyName: ""
+  property string pendingDone: ""
+  property string pendingFailed: ""
 
   property string statusText: ""
   property bool statusIsError: false
@@ -101,13 +128,17 @@ Item {
   property int footerHeight: Style.space(20)
   property int rowHeight: Math.max(Style.space(54), Style.font.title + Style.font.caption + Style.space(14))
   property int windowRowHeight: Math.max(Style.space(46), Style.font.body + Style.font.caption + Style.space(12))
+  property int pickerRowHeight: Style.space(40)
   property int rowSpacing: Style.space(4)
   property int listMaxHeight: Style.space(400)
   property int emptyHeight: Style.space(110)
   property int cardWidth: Style.space(520)
 
   function rowHeightOf(row) {
-    return row && row.kind === "window" ? root.windowRowHeight : root.rowHeight
+    if (!row) return root.rowHeight
+    if (row.kind === "window") return root.windowRowHeight
+    if (row.kind === "workspaces") return root.pickerRowHeight
+    return root.rowHeight
   }
 
   readonly property int listHeight: {
@@ -145,7 +176,7 @@ Item {
   // -- reading the list
   function refresh() {
     if (!root.opened) return
-    if (root.busyKey !== "" || killProcess.running || closeProcess.running) return
+    if (root.busyKey !== "" || killProcess.running || dispatchProcess.running) return
     if (clientsProcess.running || commProcess.running) {
       root.refreshPending = true
       return
@@ -176,6 +207,7 @@ Item {
     root.loadedOnce = true
     root.loadError = ""
     root.pruneExpanded()
+    root.prunePicker()
     root.syncSelection()
     // A successful read clears the result line, so the panel stops claiming
     // that something failed. An error stays until the next action or the next
@@ -258,6 +290,50 @@ Item {
     root.setExpanded(appKey, !root.isExpanded(appKey))
   }
 
+  // -- sending one window to a workspace
+  //
+  // A row can open the picker when it owns exactly one window: a window row, or
+  // an app row whose app has a single window. Those rows carry the window
+  // address, and a row without an address has nothing to move.
+  function togglePicker(row) {
+    if (!row || row.address === "") return
+    root.pickerKey = root.pickerKey === row.key ? "" : row.key
+  }
+
+  function openPicker(row) {
+    if (!row || row.address === "") return
+    root.pickerKey = row.key
+    // The picker row sits right under the row it moves, so selecting it is one
+    // step forward in the same list the arrow keys walk.
+    if (root.selectedIndex + 1 < root.rows.length && root.rows[root.selectedIndex + 1].kind === "workspaces")
+      root.selectRow(root.selectedIndex + 1)
+  }
+
+  function closePicker() {
+    root.pickerKey = ""
+  }
+
+  function indexOfRow(rowKey) {
+    for (var index = 0; index < root.rows.length; index++) {
+      if (root.rows[index].key === rowKey) return index
+    }
+    return -1
+  }
+
+  // A picker whose window closed, or whose app collapsed, has nothing to act on.
+  function prunePicker() {
+    if (root.pickerKey === "") return
+    if (root.indexOfRow(root.pickerKey) < 0) root.pickerKey = ""
+  }
+
+  // 1 to 9 and 0 map to the workspace numbers, so the picker works without a
+  // mouse once it is open.
+  function workspaceDigitFromKey(event) {
+    if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) return event.key - Qt.Key_0
+    if (event.key === Qt.Key_0) return 10
+    return 0
+  }
+
   // An app that closed its windows, or went away, keeps no open state.
   function pruneExpanded() {
     var allowed = {}
@@ -271,7 +347,17 @@ Item {
 
   function expandSelected() {
     var row = root.currentRow()
-    if (!row || row.kind !== "app" || !row.canExpand) return
+    if (!row) return
+    if (row.kind === "window") {
+      root.openPicker(row)
+      return
+    }
+    if (row.kind === "app" && !row.canExpand) {
+      // One window, so the app row is the window row.
+      root.openPicker(row)
+      return
+    }
+    if (row.kind !== "app" || !row.canExpand) return
     if (!root.isExpanded(row.appKey)) {
       root.setExpanded(row.appKey, true)
       return
@@ -283,6 +369,12 @@ Item {
   function collapseSelected() {
     var row = root.currentRow()
     if (!row) return
+    if (row.kind === "workspaces") {
+      var sourceIndex = root.indexOfRow(row.sourceKey)
+      root.closePicker()
+      if (sourceIndex >= 0) root.selectRow(sourceIndex)
+      return
+    }
     if (row.kind === "window") {
       var appIndex = -1
       for (var position = 0; position < root.rows.length; position++) {
@@ -317,25 +409,56 @@ Item {
   }
 
   function closeWindow(row) {
-    if (killProcess.running || closeProcess.running) return
     var command = Apps.closeWindowCommand(row.address)
     if (command === "") {
       root.statusIsError = true
       root.statusText = "This window has no address to close"
       return
     }
+    root.runDispatch(row, command, "Closing " + row.name, "Closed " + row.name,
+      "close " + row.name)
+  }
+
+  // The workspace picker sends the window to the number that was clicked or
+  // typed, then closes: the row it acts on is gone from the picker's point of
+  // view, and the list is re-read anyway.
+  function moveWindowTo(row, workspaceId) {
+    if (!row || row.kind !== "workspaces") return
+    var command = Apps.moveWindowCommand(row.address, workspaceId)
+    if (command === "") {
+      root.statusIsError = true
+      root.statusText = "This window has no address to move"
+      return
+    }
+    var workspace = String(Math.round(Number(workspaceId)))
+    // Closing the picker removes a row above the one that stays selected, so the
+    // cursor is put back on the row the numbers acted on.
+    var sourceIndex = root.indexOfRow(row.sourceKey)
+    root.closePicker()
+    if (sourceIndex >= 0) root.selectRow(sourceIndex)
+    root.runDispatch(row, command,
+      "Moving " + row.app.name + " to workspace " + workspace,
+      "Moved " + row.app.name + " to workspace " + workspace,
+      "move " + row.app.name + " to workspace " + workspace)
+  }
+
+  // Both window actions are one hyprctl call with one reply to read, so they
+  // share the process, the watchdog, and the line that reports the outcome.
+  function runDispatch(row, command, doing, done, failed) {
+    if (dispatchProcess.running || killProcess.running) return
     root.busyKey = row.key
-    root.busyName = row.name
+    root.pendingDone = done
+    root.pendingFailed = failed
     root.statusIsError = false
-    root.statusText = "Closing " + row.name + "..."
-    closeProcess.failure = ""
-    closeProcess.command = ["hyprctl", "dispatch", command]
-    closeProcess.running = true
-    closeTimeout.restart()
+    root.statusText = doing + "..."
+    dispatchProcess.failure = ""
+    dispatchProcess.command = ["hyprctl", "dispatch", command]
+    dispatchProcess.running = true
+    dispatchTimeout.restart()
   }
 
   function forceQuitApp(row) {
-    if (killProcess.running || closeProcess.running) return
+    if (killProcess.running || dispatchProcess.running) return
     // pidText is a plain string, so it crosses into the shell process without
     // being turned into a QVariantList. The list still works if a row was built
     // before pidText existed.
@@ -479,63 +602,65 @@ Item {
     }
   }
 
-  // -- closing one window
+  // -- closing and moving one window
   //
   // hyprctl answers "ok" or prints why it did not, so the reply is worth
-  // reading rather than assuming the window went away.
+  // reading rather than assuming the window moved or went away.
   Process {
-    id: closeProcess
+    id: dispatchProcess
     running: false
     property string failure: ""
     property bool timedOut: false
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
-        if (chunk.trim() !== "ok") closeProcess.failure = Apps.sentence(chunk)
+        if (chunk.trim() !== "ok") dispatchProcess.failure = Apps.sentence(chunk)
       }
     }
     stderr: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
-        closeProcess.failure = Apps.sentence(chunk)
+        dispatchProcess.failure = Apps.sentence(chunk)
       }
     }
     onExited: function(code) {
-      closeTimeout.stop()
-      var name = root.busyName
-      var failure = closeProcess.failure
-      var timedOut = closeProcess.timedOut
-      closeProcess.failure = ""
-      closeProcess.timedOut = false
+      dispatchTimeout.stop()
+      var done = root.pendingDone
+      var failed = root.pendingFailed
+      var failure = dispatchProcess.failure
+      var timedOut = dispatchProcess.timedOut
+      dispatchProcess.failure = ""
+      dispatchProcess.timedOut = false
       root.busyKey = ""
-      root.busyName = ""
+      root.pendingDone = ""
+      root.pendingFailed = ""
 
       if (timedOut) {
         root.statusIsError = true
-        root.statusText = "Could not close " + name
+        root.statusText = "Could not " + failed
         root.loadError = "hyprctl did not answer in time."
         return
       }
       if (code !== 0 || failure !== "") {
         root.statusIsError = true
-        root.statusText = "Could not close " + name
+        root.statusText = "Could not " + failed
         root.loadError = failure !== "" ? failure : "hyprctl exited with code " + code + "."
         return
       }
       root.statusIsError = false
-      root.statusText = "Closed " + name
+      root.statusText = done
       settleTimer.restart()
     }
   }
 
   Timer {
-    id: closeTimeout
+    id: dispatchTimeout
     interval: 5000
     repeat: false
     onTriggered: {
-      if (!closeProcess.running) return
-      closeProcess.timedOut = true
-      closeProcess.signal(15)
+      if (!dispatchProcess.running) return
+      dispatchProcess.timedOut = true
+      dispatchProcess.signal(15)
     }
   }
 
@@ -669,7 +794,12 @@ Item {
 
           Keys.priority: Keys.BeforeItem
           Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) {
+            var row = root.currentRow()
+            var digit = row && row.kind === "workspaces" ? root.workspaceDigitFromKey(event) : 0
+            if (digit > 0) {
+              root.moveWindowTo(row, digit)
+              event.accepted = true
+            } else if (event.key === Qt.Key_Escape) {
               root.close()
               event.accepted = true
             } else if (event.key === Qt.Key_Up) {
@@ -847,9 +977,10 @@ Item {
                     }
 
                     Column {
+                      visible: rowItem.row.kind !== "workspaces"
                       anchors.left: rowItem.isApp ? chevron.right : parent.left
                       anchors.leftMargin: rowItem.isApp ? Style.space(4) : Style.space(30)
-                      anchors.right: quitButton.left
+                      anchors.right: rowItem.row.address !== "" ? workspaceButton.left : quitButton.left
                       anchors.rightMargin: Style.space(10)
                       anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(2)
@@ -877,11 +1008,86 @@ Item {
                       }
                     }
 
+                    // The square with the window's workspace on it. It opens the
+                    // picker below the row, which is where the numbers live.
+                    Button {
+                      id: workspaceButton
+                      visible: rowItem.row.address !== "" && rowItem.row.kind !== "workspaces"
+                      anchors.right: quitButton.left
+                      anchors.rightMargin: Style.space(6)
+                      anchors.verticalCenter: parent.verticalCenter
+                      width: Style.space(30)
+                      height: Style.space(30)
+                      bordered: true
+                      selected: root.pickerKey === rowItem.row.key
+                      text: rowItem.row.address !== "" ? String(rowItem.row.workspace) : ""
+                      fontSize: Style.font.caption
+                      tooltipText: "On workspace " + String(rowItem.row.workspace)
+                        + ". Click to move this window"
+                      onClicked: root.togglePicker(rowItem.row)
+                    }
+
+                    // The picker. One square per workspace, the window's current
+                    // one marked, so the row says where the window is and where a
+                    // click would send it.
+                    Item {
+                      visible: rowItem.row.kind === "workspaces"
+                      anchors.fill: parent
+
+                      Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: Style.space(30)
+                        anchors.verticalCenter: parent.verticalCenter
+                        textFormat: Text.PlainText
+                        text: "Move to workspace"
+                        color: rowItem.isCursor ? root.selectedText : root.foreground
+                        opacity: 0.7
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: Style.space(8)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(4)
+
+                        // A fixed set of twelve buttons, with the ones past the
+                        // current workspace count hidden. A Repeater whose model
+                        // grows and shrinks inside a reused row delegate leaves
+                        // stale buttons behind, and a number drawn twice is worse
+                        // than a number not drawn at all.
+                        Repeater {
+                          model: 12
+
+                          delegate: Button {
+                            required property int index
+
+                            readonly property var choices: rowItem.row.kind === "workspaces"
+                              ? rowItem.row.choices : []
+                            readonly property int workspace: index < choices.length
+                              ? Number(choices[index]) : 0
+                            readonly property string label: String(workspace)
+
+                            visible: index < choices.length
+                            width: Style.space(28)
+                            height: Style.space(28)
+                            bordered: true
+                            selected: rowItem.row.workspace === label
+                            text: label
+                            fontSize: Style.font.caption
+                            tooltipText: "Move this window to workspace " + label
+                            onClicked: root.moveWindowTo(rowItem.row, workspace)
+                          }
+                        }
+                      }
+                    }
+
                     // The X quits what the row names. On an app row that is the
-                    // whole app, on a window row that is the one process behind
-                    // that window.
+                    // whole app, on a window row that is the one window.
                     Button {
                       id: quitButton
+                      visible: rowItem.row.kind !== "workspaces"
                       anchors.right: parent.right
                       anchors.rightMargin: Style.space(8)
                       anchors.verticalCenter: parent.verticalCenter
