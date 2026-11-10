@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "h1st0ry3d.oappy",
+  "name": "Oappy",
+  "version": "0.2.0",
+  "author": "h1st0ry3d",
+  "license": "MIT",
+  "description": "The running apps in one panel, each with an X that quits it. Opens from the bar or with SUPER + ALT + ESCAPE.",
+  "kinds": [
+    "bar-widget",
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "OappyBar.qml",
+    "overlay": "Oappy.qml"
+  },
+  "barWidget": {
+    "displayName": "Oappy",
+    "description": "One icon that opens the running apps panel, where each app and each of its windows has an X that quits it.",
+    "category": "System",
+    "aliases": [
+      "apps",
+      "running",
+      "force-quit",
+      "task-manager"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
